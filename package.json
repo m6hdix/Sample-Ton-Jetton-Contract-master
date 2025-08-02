@@ -4,7 +4,10 @@
     "scripts": {
         "start": "blueprint run",
         "build": "blueprint build",
-        "test": "jest --verbose"
+        "test": "jest --verbose",
+        "lock": "ts-node scripts/transferLockManager.ts lock",
+        "unlock": "ts-node scripts/transferLockManager.ts unlock",
+        "status": "ts-node scripts/transferLockManager.ts status"
     },
     "devDependencies": {
         "@ton/blueprint": "^0.19.0",
