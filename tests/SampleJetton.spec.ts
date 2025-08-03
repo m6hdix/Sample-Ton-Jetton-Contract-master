@@ -2,6 +2,7 @@ import { Blockchain, SandboxContract, TreasuryContract, internal } from '@ton/sa
 import { toNano, beginCell, Address } from '@ton/core';
 import { SampleJetton } from '../wrappers/SampleJetton';
 import '@ton/test-utils';
+import { JettonDefaultWallet } from '../build/SampleJetton/tact_JettonDefaultWallet';
 
 describe('SampleJetton', () => {
     let blockchain: Blockchain;
@@ -239,5 +240,214 @@ describe('SampleJetton', () => {
         expect(mintResult.transactions).toHaveTransaction({
             success: true,
         });
+    });
+
+    it('should prevent transfers when wallet is locked', async () => {
+        // Mint tokens to deployer
+        await sampleJetton.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            { $$type: 'Mint', amount: 1000n, receiver: deployer.address }
+        );
+
+        // Open deployer's wallet
+        const walletAddr = await sampleJetton.getGetWalletAddress(deployer.address);
+        const deployerWallet = blockchain.openContract(JettonDefaultWallet.fromAddress(walletAddr));
+        const receiver = await blockchain.treasury('receiver');
+
+        // Lock the wallet by sending UpdateTransferLock from master contract
+        await blockchain.sendMessage(internal({
+            from: sampleJetton.address,
+            to: walletAddr,
+            value: toNano('0.05'),
+            body: beginCell()
+                .storeUint(0x6c7c41e4, 32) // op: UpdateTransferLock
+                .storeUint(0, 64) // query_id
+                .storeUint(1, 8) // locked: true (uint8, 1 = true)
+                .endCell()
+        }));
+
+        // Attempt transfer
+        const transferResult = await deployerWallet.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            {
+                $$type: 'TokenTransfer',
+                queryId: 0n,
+                amount: 100n,
+                destination: receiver.address,
+                response_destination: deployer.address,
+                custom_payload: null,
+                forward_ton_amount: 0n,
+                forward_payload: beginCell().endCell()
+            }
+        );
+
+        expect(transferResult.transactions).toHaveTransaction({
+            from: deployer.address,
+            to: walletAddr,
+            success: false,
+        });
+    });
+
+    it('should allow transfers when wallet is unlocked', async () => {
+        // Mint tokens
+        await sampleJetton.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            { $$type: 'Mint', amount: 1000n, receiver: deployer.address }
+        );
+
+        const walletAddr = await sampleJetton.getGetWalletAddress(deployer.address);
+        const deployerWallet = blockchain.openContract(JettonDefaultWallet.fromAddress(walletAddr));
+        const receiver = await blockchain.treasury('receiver');
+
+        // Ensure wallet is unlocked
+        await blockchain.sendMessage(internal({
+            from: sampleJetton.address,
+            to: walletAddr,
+            value: toNano('0.05'),
+            body: beginCell()
+                .storeUint(0x6c7c41e4, 32) // op: UpdateTransferLock
+                .storeUint(0, 64) // query_id
+                .storeUint(0, 8) // locked: false (uint8, 0 = false)
+                .endCell()
+        }));
+
+        const transferResult = await deployerWallet.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            {
+                $$type: 'TokenTransfer',
+                queryId: 0n,
+                amount: 100n,
+                destination: receiver.address,
+                response_destination: deployer.address,
+                custom_payload: null,
+                forward_ton_amount: 0n,
+                forward_payload: beginCell().endCell()
+            }
+        );
+
+        expect(transferResult.transactions).toHaveTransaction({
+            success: true,
+        });
+    });
+
+    it('should prevent non-admin users from transferring tokens when wallet is locked', async () => {
+        // Create two non-admin users
+        const user1 = await blockchain.treasury('user1');
+        const user2 = await blockchain.treasury('user2');
+        
+        // Step 1: Deploy contract and mint tokens to user1
+        await sampleJetton.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            { $$type: 'Mint', amount: 1000n, receiver: user1.address }
+        );
+
+        // Step 2: Get user1's wallet and lock it
+        const user1WalletAddr = await sampleJetton.getGetWalletAddress(user1.address);
+        const user1Wallet = blockchain.openContract(JettonDefaultWallet.fromAddress(user1WalletAddr));
+
+        // Step 3: Lock the wallet (deployer is owner, so this will work for testing)
+        await blockchain.sendMessage(internal({
+            from: sampleJetton.address,
+            to: user1WalletAddr,
+            value: toNano('0.05'),
+            body: beginCell()
+                .storeUint(0x6c7c41e4, 32) // op: UpdateTransferLock
+                .storeUint(0, 64) // query_id
+                .storeUint(1, 8) // locked: true (uint8, 1 = true)
+                .endCell()
+        }));
+
+        // Step 4: User1 attempts to transfer tokens to User2 (should fail due to wallet lock)
+        const transferResult = await user1Wallet.send(
+            user1.getSender(),
+            { value: toNano('0.05') },
+            {
+                $$type: 'TokenTransfer',
+                queryId: 0n,
+                amount: 100n,
+                destination: user2.address,
+                response_destination: user1.address,
+                custom_payload: null,
+                forward_ton_amount: 0n,
+                forward_payload: beginCell().endCell()
+            }
+        );
+
+        // Verify the transfer failed
+        expect(transferResult.transactions).toHaveTransaction({
+            from: user1.address,
+            to: user1WalletAddr,
+            success: false,
+        });
+
+        // Verify User1's balance remains unchanged
+        const user1WalletData = await user1Wallet.getGetWalletData();
+        expect(user1WalletData.balance).toBe(1000n);
+    });
+
+    it('should allow non-admin users to transfer tokens when wallet is unlocked', async () => {
+        // Create two non-admin users
+        const user1 = await blockchain.treasury('user1');
+        const user2 = await blockchain.treasury('user2');
+        
+        // Step 1: Deploy contract and mint tokens to user1
+        await sampleJetton.send(
+            deployer.getSender(),
+            { value: toNano('0.05') },
+            { $$type: 'Mint', amount: 1000n, receiver: user1.address }
+        );
+
+        // Step 2: Get user1's wallet and ensure it's unlocked
+        const user1WalletAddr = await sampleJetton.getGetWalletAddress(user1.address);
+        const user1Wallet = blockchain.openContract(JettonDefaultWallet.fromAddress(user1WalletAddr));
+
+        // Step 3: Ensure wallet is unlocked
+        await blockchain.sendMessage(internal({
+            from: sampleJetton.address,
+            to: user1WalletAddr,
+            value: toNano('0.05'),
+            body: beginCell()
+                .storeUint(0x6c7c41e4, 32) // op: UpdateTransferLock
+                .storeUint(0, 64) // query_id
+                .storeUint(0, 8) // locked: false (uint8, 0 = false)
+                .endCell()
+        }));
+
+        // Step 4: User1 transfers tokens to User2 (should succeed)
+        const transferResult = await user1Wallet.send(
+            user1.getSender(),
+            { value: toNano('0.05') },
+            {
+                $$type: 'TokenTransfer',
+                queryId: 0n,
+                amount: 100n,
+                destination: user2.address,
+                response_destination: user1.address,
+                custom_payload: null,
+                forward_ton_amount: 0n,
+                forward_payload: beginCell().endCell()
+            }
+        );
+
+        // Verify the transfer succeeded
+        expect(transferResult.transactions).toHaveTransaction({
+            from: user1.address,
+            to: user1WalletAddr,
+            success: true,
+        });
+
+        // Verify User1's balance decreased and User2 received tokens
+        const user1WalletData = await user1Wallet.getGetWalletData();
+        expect(user1WalletData.balance).toBe(900n);
+
+        const user2WalletAddr = await sampleJetton.getGetWalletAddress(user2.address);
+        const user2Wallet = blockchain.openContract(JettonDefaultWallet.fromAddress(user2WalletAddr));
+        const user2WalletData = await user2Wallet.getGetWalletData();
+        expect(user2WalletData.balance).toBe(100n);
     });
 });

@@ -1,15 +1,15 @@
-import { Address, TonClient, WalletContractV4, beginCell } from "@ton/ton";
+import { Address, TonClient, WalletContractV4, beginCell, toNano } from "@ton/ton";
 import { mnemonicToPrivateKey } from "@ton/crypto";
 import { SampleJetton } from "../wrappers/SampleJetton";
 
 // Configuration
-const MNEMONIC = "muscle lock elbow muffin voice slow snow doll inner area mechanic aerobic awful nation slim core tobacco swarm pact tornado donate win wish actual"; // Replace with your wallet mnemonic
-const CONTRACT_ADDRESS = "kQBQO0INqtYKtgYUW5RhJNLjtAKbuRokvMuowof6vdsoqEFL"; // Replace with your deployed contract address
+const MNEMONIC = "muscle lock elbow muffin voice slow snow doll inner area mechanic aerobic awful nation slim core tobacco swarm pact tornado donate win wish actual";
+const CONTRACT_ADDRESS = "kQBQO0INqtYKtgYUW5RhJNLjtAKbuRokvMuowof6vdsoqEFL";
 
 // Initialize client
 const client = new TonClient({
     endpoint: 'https://testnet.toncenter.com/api/v2/jsonRPC',
-    apiKey: '0bc1cd188a8f350b0f79145ef2cfa59664e206eb22a965cc22497909bbbc5983' // Optional: get from toncenter.com
+    apiKey: '0bc1cd188a8f350b0f79145ef2cfa59664e206eb22a965cc22497909bbbc5983'
 });
 
 // Initialize wallet
@@ -31,18 +31,17 @@ export async function lockTransfers() {
     try {
         console.log("🔒 Locking transfers...");
         
-        const { contract } = await getWallet();
+        const { contract, key } = await getWallet();
         const jettonContract = await getJettonContract();
         
-        const result = await jettonContract.send(contract.sender({ value: "0.05" }), {
-            $$type: 'SetTransferLock',
-            locked: true
-        });
+        await jettonContract.send(
+            contract.sender(key.secretKey),
+            { value: toNano('0.05') },
+            { $$type: 'SetTransferLock', locked: true }
+        );
 
         console.log("✅ Transfers locked successfully!");
-        console.log("Transaction hash:", result.hash.toString('hex'));
         
-        return result;
     } catch (error) {
         console.error("❌ Error locking transfers:", error);
         throw error;
@@ -54,18 +53,17 @@ export async function unlockTransfers() {
     try {
         console.log("🔓 Unlocking transfers...");
         
-        const { contract } = await getWallet();
+        const { contract, key } = await getWallet();
         const jettonContract = await getJettonContract();
         
-        const result = await jettonContract.send(contract.sender({ value: "0.05" }), {
-            $$type: 'SetTransferLock',
-            locked: false
-        });
+        await jettonContract.send(
+            contract.sender(key.secretKey),
+            { value: toNano('0.05') },
+            { $$type: 'SetTransferLock', locked: false }
+        );
 
         console.log("✅ Transfers unlocked successfully!");
-        console.log("Transaction hash:", result.hash.toString('hex'));
         
-        return result;
     } catch (error) {
         console.error("❌ Error unlocking transfers:", error);
         throw error;

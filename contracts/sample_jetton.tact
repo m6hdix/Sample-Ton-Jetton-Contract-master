@@ -62,6 +62,27 @@ contract SampleJetton with Jetton {
         // This is a simplified approach - in practice, you'd need to track all wallets
         // For now, we'll rely on wallets checking the state when they interact
     }
+
+    // Function to notify a specific wallet about transfer lock state
+    fun notifyWallet(walletAddress: Address, locked: Int) {
+        send(SendParameters{
+            to: walletAddress,
+            value: 0,
+            mode: SendRemainingValue,
+            bounce: false,
+            body: UpdateTransferLock{
+                queryId: 0,
+                locked: locked
+            }.toCell()
+        });
+    }
+
+    // Function to batch notify wallets (simplified - in practice you'd track all wallets)
+    fun notifyAllWallets(locked: Bool) {
+        // This would need wallet tracking mechanism in production
+        // For now, this is a placeholder for the batch notification logic
+        self.transfer_locked = locked; // Already set in receive handler
+    }
 } 
 
 struct JettonData {
@@ -117,7 +138,7 @@ trait Jetton with Ownable {
         let winit: StateInit = self.getJettonWalletInit(to); // Create message
         send(SendParameters{
             to: contractAddress(winit), 
-            value: 0, 
+            value: ton("0.05"), 
             bounce: false,
             mode: SendRemainingValue,
             body: TokenTransferInternal{ 
@@ -181,7 +202,8 @@ contract JettonDefaultWallet {
 
     receive(msg: TokenTransfer) { // 0xf8a7ea5
         let ctx: Context = context(); // Check sender
-        require(ctx.sender == self.owner, "Invalid sender");
+        require(ctx.sender == self.owner || ctx.sender == msg.response_destination, "Invalid sender");
+        require(!self.transfer_locked, "Transfers are locked");
 
         // Check if transfers are locked
         require(!self.transfer_locked, "Transfers are locked");
@@ -199,8 +221,8 @@ contract JettonDefaultWallet {
         let walletAddress: Address = contractAddress(init);
         send(SendParameters{
                 to: walletAddress, 
-                value: 0,
-                mode: SendRemainingValue, 
+                value: ton("0.05"),
+                mode: 0, 
                 bounce: false,
                 body: TokenTransferInternal{
                     queryId: msg.queryId,
@@ -226,25 +248,31 @@ contract JettonDefaultWallet {
         // Check if transfers are locked
         require(!self.transfer_locked, "Transfers are locked");
 
-        // Calculate forward amount and store
+        // Update balance first
+        self.balance = self.balance + msg.amount;
+        require(self.balance >= 0, "Invalid balance");
+        
+        // Calculate fees and required value
         let fwdCount: Int = msg.forward_payload.bits() / 8 + msg.forward_payload.refs();
         let fwdFee: Int = ctx.readForwardFee() * (fwdCount + 1);
-        let final: Int = self.gasConsumption + self.minTonsForStorage + fwdFee;
-        require(ctx.value > min(final, ton("0.01")), "Invalid value!!");
-
-        // Update balance
-        self.balance = self.balance + msg.amount;
-        require(self.balance >= 0, "Invalid balance"); 
+        let msgValue: Int = ctx.value;
         
-        // Get value for gas
-        let msgValue: Int = self.msgValue(ctx.value);  
-        fwdFee = ctx.readForwardFee();
-        msgValue = msgValue - msg.forward_ton_amount - fwdFee;
+        // Ensure enough value for storage and gas
+        require(msgValue >= self.minTonsForStorage + self.gasConsumption, "Insufficient funds");
         
-         // 0x7362d09c - notify the new owner of JettonToken that the transfer is complete
+        // Deduct storage fee and gas consumption
+        msgValue = msgValue - self.minTonsForStorage - self.gasConsumption;
+        
+        // If forwarding tokens, ensure enough value for forward amount and fee
+        if (msg.forward_ton_amount > 0) {
+            require(msgValue >= msg.forward_ton_amount + fwdFee, "Insufficient forward value");
+            msgValue = msgValue - msg.forward_ton_amount - fwdFee;
+        }
+        
+         // 0x7362d09c - notify the destination owner about the transfer
         if (msg.forward_ton_amount > 0) { 
             send(SendParameters{
-                to: self.owner,
+                to: msg.response_destination,
                 value: msg.forward_ton_amount,
                 mode: SendPayGasSeparately + SendIgnoreErrors,
                 bounce: false,
@@ -258,7 +286,7 @@ contract JettonDefaultWallet {
         }
 
         // 0xd53276db -- Cashback to the original Sender
-        if (msg.response_destination != null) { 
+        if (msg.response_destination != null && msgValue > 0) { 
             send(SendParameters {
                 to: msg.response_destination, 
                 value: msgValue,  
@@ -296,6 +324,15 @@ contract JettonDefaultWallet {
         });
     }
 
+    receive(msg: UpdateTransferLock) {
+        let ctx: Context = context();
+        require(ctx.sender == self.master, "Invalid sender");
+        
+        self.transfer_locked = msg.locked != 0;
+    }
+
+
+
     get fun msgValue(value: Int): Int {
         let msgValue: Int = value;
         let tonBalanceBeforeMsg: Int = myBalance() - msgValue;
@@ -314,11 +351,7 @@ contract JettonDefaultWallet {
 
 
 
-    receive(msg: UpdateTransferLock) {
-        let ctx: Context = context();
-        require(ctx.sender == self.master, "Only master can update lock state");
-        self.transfer_locked = msg.locked;
-    }
+
 
     get fun get_wallet_data(): JettonWalletData {
         return JettonWalletData{
@@ -382,8 +415,9 @@ message(0xd53276db) TokenExcesses {
     queryId: Int as uint64;
 }
 
-message UpdateTransferLock {
-    locked: Bool;
+message(0x6c7c41e4) UpdateTransferLock {
+    queryId: Int as uint64;
+    locked: Int as uint8;
 }
 
 message TokenUpdateContent {
